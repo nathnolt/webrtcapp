@@ -1,0 +1,527 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>WebRTC Inspector</title>
+<style>
+  :root {
+    --bg:#0e1116; --card:#161b22; --line:#2a313c; --fg:#d6dde6; --dim:#8b96a5;
+    --host:#6cb6ff; --srflx:#56d364; --prflx:#d2a8ff; --relay:#f0883e; --bad:#ff7b72; --ok:#56d364; --warn:#e3b341;
+  }
+  * { box-sizing:border-box; }
+  [hidden] { display:none !important; }
+  body { margin:0; background:var(--bg); color:var(--fg); font:14px/1.5 system-ui,sans-serif; }
+  header { padding:8px 16px; border-bottom:1px solid var(--line); display:flex; gap:10px; align-items:center; flex-wrap:wrap; background:var(--bg); height:53px; position:relative; z-index:30; }
+  header h1 { font-size:16px; margin:0 8px 0 0; }
+  .tabs { display:flex; gap:2px; margin-right:12px; }
+  .tabs button { border:0; background:transparent; color:var(--dim); padding:6px 14px; border-radius:6px; font-weight:600; }
+  .tabs button.active { background:#21262d; color:var(--fg); }
+  input, textarea, button, select { background:#0d1117; color:var(--fg); border:1px solid var(--line); border-radius:6px; padding:5px 9px; font:inherit; }
+  button { cursor:pointer; } button:hover:not(:disabled) { border-color:var(--host); } button:disabled { opacity:.4; cursor:default; }
+  button.primary { background:#1f6feb; border-color:#1f6feb; color:#fff; }
+  textarea { width:100%; font:12px ui-monospace,monospace; resize:vertical; }
+  label { color:var(--dim); display:inline-flex; gap:5px; align-items:center; }
+
+  /* ───── room menu ───── */
+  .pathbadge { margin-left:auto; font-size:12px; padding:3px 12px; border-radius:99px; border:1px solid var(--line); color:var(--dim); cursor:pointer; white-space:nowrap; }
+  .pathbadge.direct { color:var(--ok); border-color:#1f5a30; background:#0f2417; }
+  .pathbadge.relay { color:var(--relay); border-color:#6b3a1a; background:#2a1a0d; }
+  .pathbadge.mixed { color:var(--warn); border-color:#4d4116; background:#2a2412; }
+  .menuwrap { position:relative; }
+  .menu { position:absolute; left:0; top:calc(100% + 8px); width:min(380px,92vw); background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; box-shadow:0 12px 36px #000b; display:flex; flex-direction:column; gap:10px; }
+  .menu h3 { margin:0; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); }
+  .menu .field { display:grid; grid-template-columns:96px 1fr; gap:6px 10px; align-items:center; }
+  .menu .mode { display:flex; flex-direction:column; gap:6px; }
+  .menu .mode label { color:var(--fg); align-items:flex-start; padding:7px 10px; border:1px solid var(--line); border-radius:8px; cursor:pointer; }
+  .menu .mode label:has(input:checked) { border-color:var(--host); background:#112033; }
+  .menu .mode small { display:block; color:var(--dim); font-size:12px; }
+  .menu .sub { margin-left:26px; display:flex; gap:8px; align-items:center; margin-top:6px; }
+  .menu .sub input[type=number] { width:80px; }
+  .menu .warn { font-size:12px; color:var(--warn); background:#2a2412; border:1px solid #4d4116; border-radius:8px; padding:6px 10px; }
+
+  /* ───── call view ───── */
+  .callview { display:flex; gap:12px; padding:12px; height:calc(100vh - 53px); height:calc(100dvh - 53px); }
+  .callview:fullscreen { height:100vh; background:var(--bg); }
+  .callmain { flex:1; min-width:0; display:flex; flex-direction:column; gap:10px; background:var(--bg); }
+  .stage { position:relative; flex:1; min-height:0; display:grid; gap:8px; }
+  .stage[data-zoom=none] { grid-template-columns:repeat(var(--cols,2),minmax(0,1fr)); grid-template-rows:repeat(var(--rows,1),minmax(0,1fr)); }
+  .tile { position:relative; background:#000; border-radius:12px; overflow:hidden; min-height:0; min-width:0; cursor:pointer; border:1px solid var(--line); }
+  .tile video { width:100%; height:100%; object-fit:contain; display:block; transform:scale(var(--fx,1),var(--fy,1)); }
+  .tile .cap { position:absolute; left:10px; bottom:8px; font-size:12px; background:#000a; padding:2px 9px; border-radius:99px; z-index:2; max-width:calc(100% - 20px); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+  .tile .overlay { position:absolute; inset:0; display:flex; align-items:center; justify-content:center; text-align:center; padding:20px; background:#12161d; color:var(--dim); font-size:15px; z-index:1; white-space:pre-line; }
+  .tile .vol { position:absolute; right:8px; top:8px; z-index:3; display:flex; gap:6px; align-items:center; background:#000c; padding:3px 8px; border-radius:99px; opacity:0; transition:opacity .15s; cursor:default; }
+  .tile:hover .vol, .tile .vol:focus-within { opacity:1; }
+  @media (hover:none) { .tile .vol { opacity:1; } }
+  .tile .vol button { border:0; background:transparent; padding:0 2px; font-size:15px; line-height:1; }
+  .tile .vol input[type=range] { width:90px; padding:0; border:0; background:transparent; accent-color:#1f6feb; }
+  .stage[data-zoom=on] { display:block; }
+  .stage[data-zoom=on] .tile { position:absolute; }
+  .stage[data-zoom=on] .tile.zoomed { inset:0; }
+  .stage[data-zoom=on] .tile.thumb { width:var(--tw,220px); height:var(--th,150px); bottom:12px; right:calc(12px + var(--i,0) * (var(--tw,220px) + 8px)); z-index:4; box-shadow:0 4px 18px #000a; }
+  .stage[data-zoom=on].many { --tw:150px; --th:105px; }
+  .stage[data-zoom=on] .tile.thumb .overlay { font-size:12px; padding:6px; }
+  .stage[data-zoom=on] .tile.thumb .cap { font-size:11px; left:6px; bottom:5px; }
+  .stage[data-zoom=on] .tile.thumb .vol { display:none; }
+  .statuspill { position:absolute; left:12px; top:12px; z-index:5; font-size:12px; padding:3px 11px; border-radius:99px; background:#000b; border:1px solid var(--line); max-width:70%; pointer-events:none; }
+  .statuspill.ok { color:var(--ok); } .statuspill.warn { color:var(--warn); } .statuspill.bad { color:var(--bad); }
+  .hint { font-size:13px; color:var(--warn); background:#2a2412; border:1px solid #4d4116; padding:6px 12px; border-radius:8px; }
+  .toolbar { display:flex; gap:8px; justify-content:center; flex-wrap:wrap; }
+  .tbtn { display:flex; flex-direction:column; align-items:center; gap:2px; min-width:68px; padding:7px 10px 5px; border-radius:12px; font-size:11px; color:var(--fg); position:relative; }
+  .tbtn svg.ic { width:22px; height:22px; fill:none; stroke:currentColor; stroke-width:2; stroke-linecap:round; stroke-linejoin:round; }
+  .tbtn .slash { display:none; }
+  .tbtn.off { background:#3a1618; border-color:#6b2a2e; color:#ffb3ae; }
+  .tbtn.off .slash { display:block; }
+  .tbtn.active { background:#12301c; border-color:#1f5a30; color:#9be9a8; }
+  .tbtn.leave { background:#b62324; border-color:#b62324; color:#fff; }
+  .flipwrap { position:relative; }
+  .flippop { position:absolute; bottom:calc(100% + 8px); left:50%; transform:translateX(-50%); width:240px; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:8px; display:flex; flex-direction:column; gap:6px; z-index:40; box-shadow:0 12px 36px #000b; }
+  .flippop .ftitle { font-size:11px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); padding:2px 4px; }
+  .fopt { display:grid; grid-template-columns:1fr auto; text-align:left; gap:0 8px; padding:8px 10px; border-radius:8px; }
+  .fopt small { grid-column:1; color:var(--dim); font-size:11px; }
+  .fopt .state { grid-row:1/3; grid-column:2; align-self:center; font-style:normal; padding:1px 10px; border-radius:99px; background:#21262d; font-size:11px; }
+  .fopt.active { border-color:#1f5a30; background:#12301c; }
+  .fopt.active .state { background:#1f6f3a; color:#fff; }
+  .tbtn .badge { position:absolute; top:2px; right:10px; min-width:18px; height:18px; border-radius:9px; background:#1f6feb; color:#fff; font-size:11px; font-style:normal; display:flex; align-items:center; justify-content:center; padding:0 5px; }
+
+  /* ───── chat ───── */
+  .chatpanel { width:360px; flex:none; background:var(--card); border:1px solid var(--line); border-radius:12px; padding:12px; display:flex; flex-direction:column; gap:8px; min-height:0; }
+  .chatpanel h2 { margin:0; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); }
+  .chatlog { flex:1; min-height:0; overflow:auto; display:flex; flex-direction:column; gap:8px; padding-right:2px; }
+  .msg { max-width:92%; padding:6px 10px; border-radius:10px; background:#1c232d; overflow-wrap:anywhere; }
+  .msg.me { align-self:flex-end; background:#14315a; }
+  .msg.system { align-self:center; background:transparent; color:var(--dim); font-size:12px; padding:0; max-width:100%; text-align:center; }
+  .msg .who { font-size:11px; color:var(--dim); margin-bottom:1px; }
+  .msg .body code { background:#0d1117; border-radius:4px; padding:0 4px; font:12px ui-monospace,monospace; }
+  .msg .body pre.code { margin:4px 0; padding:6px 8px; background:#0d1117; border-radius:6px; font:12px ui-monospace,monospace; white-space:pre-wrap; max-height:none; }
+  .msg .body a { color:var(--host); }
+  .msg img.pic { display:block; max-width:100%; max-height:240px; border-radius:6px; margin-top:4px; cursor:zoom-in; }
+  .composer { display:flex; flex-direction:column; gap:6px; }
+  .composer textarea { font:14px/1.45 system-ui,sans-serif; min-height:96px; max-height:240px; resize:vertical; }
+  .composer .fmt { display:flex; gap:4px; align-items:center; }
+  .composer .fmt button { padding:1px 9px; min-width:28px; }
+  .composer .fmt .tip { margin-left:auto; font-size:11px; color:var(--dim); text-align:right; }
+  .row { display:flex; gap:8px; align-items:center; flex-wrap:wrap; }
+  .toasts { position:fixed; left:50%; transform:translateX(-50%); bottom:96px; display:flex; flex-direction:column; gap:6px; z-index:50; align-items:center; }
+  .toast { background:#2b1d1e; border:1px solid #6b2a2e; color:#ffd5d2; padding:8px 14px; border-radius:8px; max-width:520px; }
+  .toast.info { background:#16243a; border-color:#27456f; color:#cfe3ff; }
+  .dropzone { position:fixed; inset:0; z-index:90; background:#0a1f3dd9; border:3px dashed var(--host); display:flex; align-items:center; justify-content:center; font-size:26px; font-weight:600; color:#dbeaff; pointer-events:none; }
+  @media (max-width:760px) {
+    .stage[data-zoom=none] { grid-template-columns:minmax(0,1fr); grid-template-rows:repeat(var(--n,2),minmax(0,1fr)); }
+    .chatpanel { position:fixed; inset:60px 8px 8px 8px; width:auto; z-index:20; }
+    .tbtn { min-width:56px; padding:6px 6px 4px; }
+  }
+
+  /* ───── dialogs ───── */
+  dialog { background:var(--card); color:var(--fg); border:1px solid var(--line); border-radius:12px; padding:0; width:min(640px,94vw); max-height:90vh; }
+  dialog::backdrop { background:#000a; }
+  .dlg { padding:16px 18px; overflow:auto; max-height:90vh; }
+  .dlg h2 { margin:0 0 4px; font-size:16px; display:flex; justify-content:space-between; align-items:center; }
+  .settings { display:grid; grid-template-columns:max-content 1fr; gap:6px 12px; align-items:center; }
+  .settings select, .settings input[type=number] { width:100%; }
+  .subhead { grid-column:1/-1; font-weight:600; font-size:12px; color:var(--fg); margin-top:10px; border-bottom:1px solid var(--line); }
+  .note { color:var(--dim); font-size:12px; }
+  #sendDlg { width:min(520px,94vw); }
+  #imgDlg { width:min(96vw,1400px); max-width:96vw; background:#0a0d12; }
+  .lb { display:flex; flex-direction:column; max-height:94vh; }
+  .lbbar { display:flex; align-items:center; gap:10px; padding:8px 12px; border-bottom:1px solid var(--line); }
+  .lbbar .title { font-weight:600; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+  .lbbar .count { color:var(--dim); font-size:12px; }
+  .lbbar .sp { flex:1; }
+  .lbbar a { color:var(--fg); text-decoration:none; border:1px solid var(--line); border-radius:6px; padding:4px 10px; font-size:13px; }
+  .lbbar a:hover { border-color:var(--host); }
+  .lbbody { position:relative; display:flex; align-items:center; justify-content:center; overflow:auto; min-height:200px; max-height:calc(94vh - 52px); padding:10px; }
+  .lbbody img { max-width:100%; max-height:calc(94vh - 90px); object-fit:contain; cursor:zoom-in; display:block; }
+  .lbbody.actual { align-items:flex-start; justify-content:flex-start; }
+  .lbbody.actual img { max-width:none; max-height:none; cursor:zoom-out; }
+  .lbnav { position:absolute; top:50%; transform:translateY(-50%); font-size:28px; line-height:1; padding:8px 12px; border-radius:99px; background:#000b; z-index:2; }
+  #lbPrev { left:12px; } #lbNext { right:12px; }
+  .filelist { display:flex; flex-direction:column; gap:8px; margin:12px 0; max-height:50vh; overflow:auto; }
+  .fileitem { display:flex; gap:12px; align-items:center; background:#0d1117; border:1px solid var(--line); border-radius:8px; padding:8px; }
+  .fileitem img { width:84px; height:64px; object-fit:cover; border-radius:6px; background:#000; }
+  .fileitem .ficon { width:84px; height:64px; display:flex; align-items:center; justify-content:center; font-size:28px; background:#161b22; border-radius:6px; }
+  .fileitem .meta { min-width:0; } .fileitem .meta b { display:block; overflow:hidden; text-overflow:ellipsis; white-space:nowrap; }
+
+  /* ───── details view ───── */
+  .detailsview { display:grid; grid-template-columns:repeat(auto-fit,minmax(420px,1fr)); gap:12px; padding:12px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:8px; padding:12px 14px; min-width:0; }
+  .card.wide { grid-column:1/-1; }
+  .card h2 { font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); margin:0 0 8px; }
+  .card h3 { font-size:13px; margin:14px 0 6px; }
+  h2.section { grid-column:1/-1; margin:10px 0 0; font-size:13px; color:var(--dim); text-transform:uppercase; letter-spacing:.06em; }
+  .badges { display:flex; gap:8px; flex-wrap:wrap; margin-bottom:8px; }
+  .badge2 { border:1px solid var(--line); border-radius:99px; padding:2px 10px; color:var(--dim); font-size:12px; }
+  .badge2 b { color:var(--fg); font-weight:600; }
+  .badge2.good b { color:var(--ok); } .badge2.bad b { color:var(--bad); } .badge2.warn b { color:var(--warn); }
+  table { border-collapse:collapse; width:100%; font-size:13px; }
+  table.mono { font:12px ui-monospace,monospace; }
+  th { text-align:left; color:var(--dim); font-weight:500; border-bottom:1px solid var(--line); padding:4px 8px; white-space:nowrap; }
+  td { padding:4px 8px; border-bottom:1px solid #20262f; vertical-align:top; }
+  table.mono td { white-space:nowrap; padding:3px 6px; }
+  .scroll { overflow:auto; max-height:320px; }
+  .t-host { color:var(--host); } .t-srflx { color:var(--srflx); } .t-prflx { color:var(--prflx); } .t-relay { color:var(--relay); }
+  .log { font:12px ui-monospace,monospace; max-height:260px; overflow:auto; white-space:pre-wrap; word-break:break-all; }
+  .log div { border-bottom:1px solid #20262f; padding:1px 0; }
+  .log .out { color:var(--host); } .log .in { color:var(--srflx); } .log .err { color:var(--bad); } .log .evt { color:var(--warn); }
+  pre { margin:0; font:11px/1.35 ui-monospace,monospace; white-space:pre-wrap; word-break:break-all; max-height:300px; overflow:auto; }
+  .kv { display:grid; grid-template-columns:max-content 1fr; gap:4px 16px; }
+  .kv > span:nth-child(odd) { color:var(--dim); }
+  .kv.mono { font:12px ui-monospace,monospace; gap:2px 14px; }
+  .ok { color:var(--ok); } .warn { color:var(--warn); } .bad { color:var(--bad); }
+  details.card > summary { cursor:pointer; font-size:12px; text-transform:uppercase; letter-spacing:.06em; color:var(--dim); }
+  details.card[open] > summary { margin-bottom:8px; }
+  progress { width:130px; }
+  .yes { color:var(--ok); } .no { color:var(--dim); }
+  .pill { display:inline-block; padding:0 7px; border-radius:99px; font-size:11px; border:1px solid var(--line); }
+  .pill.use { border-color:var(--ok); color:var(--ok); }
+  .peerbar { grid-column:1/-1; display:flex; gap:10px; align-items:center; }
+</style>
+</head>
+<body>
+<header>
+  <h1>WebRTC Inspector</h1>
+  <nav class="tabs">
+    <button data-tab="call" class="active">Call</button>
+    <button data-tab="details">Details</button>
+  </nav>
+
+  <div class="menuwrap">
+    <button id="btnRoom" class="primary" aria-haspopup="true" aria-expanded="false">Room ▾</button>
+    <div class="menu" id="roomMenu" hidden>
+      <!-- shown before you are in a room -->
+      <div id="roomPre" style="display:flex;flex-direction:column;gap:10px">
+        <h3>Join or create a room</h3>
+        <div class="field">
+          <label for="nameInput">Your name</label><input id="nameInput" maxlength="32" placeholder="e.g. Sam">
+          <label for="room">Room name</label><input id="room" maxlength="64" placeholder="e.g. team-meeting" autocomplete="off">
+        </div>
+        <div class="mode">
+          <label><input type="radio" name="mode" value="1to1" checked>
+            <span>1:1 call (2 people)<small>Just you and one other person.</small></span></label>
+          <label><input type="radio" name="mode" value="group">
+            <span>Group call (more people)<small>Everybody sees and hears everybody.</small></span></label>
+        </div>
+        <div class="sub" id="capSub" hidden>
+          <label for="capacity">Max people</label><input id="capacity" type="number" min="0" max="50" value="6">
+          <span class="note">0 = no limit</span>
+        </div>
+        <div class="warn" id="meshWarn" hidden>Every person connects directly to every other person, so your upload is (people − 1) × your video bitrate. Great for ~2–5 people; beyond that it gets heavy.</div>
+        <div class="note">The size is set by whoever creates the room. If the room already exists, its existing limit applies.</div>
+        <button id="btnJoin" class="primary">Join / create room</button>
+      </div>
+      <!-- shown once you are in a room -->
+      <div id="roomLive" style="display:none;flex-direction:column;gap:10px">
+        <h3>Room</h3>
+        <div id="roomInfo"></div>
+        <div class="row" id="hostCtl">
+          <label for="capLive">Max people</label><input id="capLive" type="number" min="0" max="50" style="width:80px">
+          <button id="btnApplyCap">Apply</button>
+          <span class="note">0 = no limit · 2 = 1:1 call</span>
+        </div>
+        <div class="row"><button id="btnCopyLink">Copy invite link</button></div>
+      </div>
+    </div>
+  </div>
+  <div class="pathbadge" id="pathBadge" title="">Media: no connection yet</div>
+</header>
+
+<!-- ═════════ CALL TAB ═════════ -->
+<div id="tab-call" class="callview">
+  <div class="callmain" id="callMain">
+    <div class="stage" id="stage" data-zoom="none">
+      <div class="statuspill" id="statusPill">Not in a room</div>
+      <div class="tile" id="tileGhost">
+        <div class="overlay" id="ovGhost"></div>
+        <div class="cap">other person</div>
+      </div>
+      <div class="tile local" id="tileLocal" title="Click to zoom in / out">
+        <video id="localVideo" autoplay playsinline muted></video>
+        <div class="overlay" id="ovLocal">Camera off</div>
+        <div class="cap" id="capLocal">you</div>
+      </div>
+      <div class="tile screen" id="tileScreenLocal" title="Click to zoom in / out" hidden>
+        <video id="screenVideo" autoplay playsinline muted></video>
+        <div class="cap" id="capScreenLocal">your screen</div>
+      </div>
+    </div>
+    <div class="hint" id="callHint" hidden></div>
+    <div class="toolbar">
+      <button class="tbtn off" id="btnMic" title="Turn microphone on/off">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M12 1a3 3 0 0 0-3 3v8a3 3 0 0 0 6 0V4a3 3 0 0 0-3-3z"/><path d="M19 10v2a7 7 0 0 1-14 0v-2"/><line x1="12" y1="19" x2="12" y2="23"/><line x1="8" y1="23" x2="16" y2="23"/><line class="slash" x1="2" y1="2" x2="22" y2="22"/></svg>
+        <span>Mic</span>
+      </button>
+      <button class="tbtn off" id="btnCam" title="Turn camera on/off">
+        <svg class="ic" viewBox="0 0 24 24"><polygon points="23 7 16 12 23 17 23 7"/><rect x="1" y="5" width="15" height="14" rx="2" ry="2"/><line class="slash" x1="2" y1="2" x2="22" y2="22"/></svg>
+        <span>Camera</span>
+      </button>
+      <button class="tbtn" id="btnShare" title="Share your screen, a window or a browser tab (your camera keeps working)">
+        <svg class="ic" viewBox="0 0 24 24"><rect x="2" y="3" width="20" height="14" rx="2"/><path d="M8 21h8M12 17v4"/></svg>
+        <span>Share screen</span>
+      </button>
+      <div class="flipwrap">
+        <button class="tbtn" id="btnFlipMenu" title="Flip your camera image" aria-haspopup="true">
+          <svg class="ic" viewBox="0 0 24 24"><path d="M8 3 4 7l4 4"/><path d="M4 7h16"/><path d="m16 21 4-4-4-4"/><path d="M20 17H4"/></svg>
+          <span>Flip me</span>
+        </button>
+        <div class="flippop" id="flipPop" hidden>
+          <div class="ftitle">Flip my camera image</div>
+          <button class="fopt" id="btnFlipLocal" title="Only changes how YOU see yourself. Nobody else is affected.">
+            <b>For myself</b><small>only your own view</small><i class="state">off</i>
+          </button>
+          <button class="fopt" id="btnFlip" title="Everyone else sees you flipped (and is told)">
+            <b>For others</b><small>they see you flipped</small><i class="state">off</i>
+          </button>
+        </div>
+      </div>
+      <button class="tbtn" id="btnChat" title="Show / hide chat">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M21 15a2 2 0 0 1-2 2H7l-4 4V5a2 2 0 0 1 2-2h14a2 2 0 0 1 2 2z"/></svg>
+        <span>Chat</span><i class="badge" id="chatBadge" hidden>0</i>
+      </button>
+      <button class="tbtn" id="btnLayout" title="Switch between grid and zoomed video">
+        <svg class="ic" viewBox="0 0 24 24"><rect x="3" y="3" width="18" height="18" rx="2"/><line x1="12" y1="3" x2="12" y2="21"/></svg>
+        <span id="layoutLabel">Grid</span>
+      </button>
+      <button class="tbtn" id="btnFull" title="Fullscreen">
+        <svg class="ic" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>
+        <span>Fullscreen</span>
+      </button>
+      <button class="tbtn" id="btnSettings" title="Settings">
+        <svg class="ic" viewBox="0 0 24 24"><circle cx="12" cy="12" r="3"/><path d="M19.4 15a1.65 1.65 0 0 0 .33 1.82l.06.06a2 2 0 1 1-2.83 2.83l-.06-.06a1.65 1.65 0 0 0-1.82-.33 1.65 1.65 0 0 0-1 1.51V21a2 2 0 1 1-4 0v-.09A1.65 1.65 0 0 0 9 19.4a1.65 1.65 0 0 0-1.82.33l-.06.06a2 2 0 1 1-2.83-2.83l.06-.06a1.65 1.65 0 0 0 .33-1.82 1.65 1.65 0 0 0-1.51-1H3a2 2 0 1 1 0-4h.09A1.65 1.65 0 0 0 4.6 9a1.65 1.65 0 0 0-.33-1.82l-.06-.06a2 2 0 1 1 2.83-2.83l.06.06a1.65 1.65 0 0 0 1.82.33H9a1.65 1.65 0 0 0 1-1.51V3a2 2 0 1 1 4 0v.09a1.65 1.65 0 0 0 1 1.51 1.65 1.65 0 0 0 1.82-.33l.06-.06a2 2 0 1 1 2.83 2.83l-.06.06a1.65 1.65 0 0 0-.33 1.82V9a1.65 1.65 0 0 0 1.51 1H21a2 2 0 1 1 0 4h-.09a1.65 1.65 0 0 0-1.51 1z"/></svg>
+        <span>Settings</span>
+      </button>
+      <button class="tbtn leave" id="btnHangup" title="Leave the room" disabled>
+        <svg class="ic" viewBox="0 0 24 24"><path d="M10.68 13.31a16 16 0 0 0 3.41 2.6l1.27-1.27a2 2 0 0 1 2.11-.45 12.84 12.84 0 0 0 2.81.7 2 2 0 0 1 1.72 2v3a2 2 0 0 1-2.18 2 19.79 19.79 0 0 1-8.63-3.07 19.42 19.42 0 0 1-3.33-2.67m-2.67-3.34a19.79 19.79 0 0 1-3.07-8.63A2 2 0 0 1 4.11 2h3a2 2 0 0 1 2 1.72 12.84 12.84 0 0 0 .7 2.81 2 2 0 0 1-.45 2.11L8.09 9.91"/><line x1="23" y1="1" x2="1" y2="23"/></svg>
+        <span>Leave</span>
+      </button>
+    </div>
+  </div>
+
+  <aside class="chatpanel" id="chatPanel" hidden>
+    <h2>Chat &amp; files</h2>
+    <div id="chatlog" class="chatlog"></div>
+    <div class="composer">
+      <div class="fmt">
+        <button id="fmtB" title="Bold (Ctrl+B)"><b>B</b></button>
+        <button id="fmtI" title="Italic (Ctrl+I)"><i>I</i></button>
+        <button id="fmtC" title="Code">&lt;/&gt;</button>
+        <button id="btnAttach" title="Send a file or image">📎</button>
+        <span class="tip">Enter = new line · Ctrl+Enter = send</span>
+      </div>
+      <textarea id="chatInput" rows="4" placeholder="Write a message… **bold**, *italic*, `code`, ~~strike~~, links. Drop or paste images or files, or drop a link to an image."></textarea>
+      <div class="row" style="justify-content:space-between">
+        <progress id="fileProg" value="0" max="1" hidden></progress><span id="fileProgText" class="note"></span>
+        <button id="btnSend" class="primary" style="margin-left:auto">Send</button>
+      </div>
+      <input type="file" id="fileInput" multiple hidden>
+    </div>
+  </aside>
+  <div class="toasts" id="toasts"></div>
+</div>
+
+<!-- ═════════ DETAILS TAB ═════════ -->
+<main id="tab-details" class="detailsview" hidden>
+  <section class="card wide">
+    <h2>Summary (what is happening right now)</h2>
+    <div class="kv" id="summary"></div>
+    <h3>People</h3>
+    <div class="scroll"><table id="partTable"></table></div>
+  </section>
+
+  <div class="peerbar">
+    <label for="detailPeer">Inspect the connection with:</label>
+    <select id="detailPeer"><option value="">(nobody yet)</option></select>
+    <button id="btnRestart" disabled title="Only the one who made the offer can restart">Restart ICE</button>
+  </div>
+
+  <section class="card wide">
+    <h2>What each side supports</h2>
+    <div class="note" id="compatNote"></div>
+    <div id="compatPeer"></div>
+    <h3>Video codecs</h3>
+    <div class="scroll"><table id="compatVideo"></table></div>
+    <h3>Audio codecs</h3>
+    <div class="scroll"><table id="compatAudio"></table></div>
+  </section>
+
+  <h2 class="section">Technical details (expand what you need)</h2>
+
+  <details class="card wide">
+    <summary>Connection states &amp; selected connection</summary>
+    <div class="badges" id="badges"></div>
+    <div class="kv mono" id="selected"><span>status</span><span>not connected</span></div>
+    <h3>Data channels</h3>
+    <div class="scroll" style="max-height:110px"><table id="dcTable" class="mono"></table></div>
+  </details>
+
+  <details class="card wide">
+    <summary>ICE candidates <span id="candNote"></span></summary>
+    <div class="scroll"><table id="candTable" class="mono">
+      <thead><tr><th>t(s)</th><th>dir</th><th>type</th><th>proto</th><th>address</th><th>port</th><th>related</th><th>priority</th><th>foundation</th><th>notes</th></tr></thead>
+      <tbody></tbody>
+    </table></div>
+    <div class="note" style="margin-top:6px">
+      <span class="t-host">host</span> = a local interface address ·
+      <span class="t-srflx">srflx</span> = your public address as seen by STUN ·
+      <span class="t-prflx">prflx</span> = learned from the peer during connectivity checks ·
+      <span class="t-relay">relay</span> = address allocated on a TURN server.
+    </div>
+  </details>
+
+  <details class="card wide">
+    <summary>Candidate pairs (connectivity checks)</summary>
+    <div class="scroll"><table id="pairTable" class="mono"></table></div>
+  </details>
+
+  <details class="card wide">
+    <summary>Media streams (RTP)</summary>
+    <div class="scroll"><table id="rtpTable" class="mono"></table></div>
+  </details>
+
+  <details class="card">
+    <summary>State log (all connections)</summary>
+    <div id="stateLog" class="log"></div>
+  </details>
+
+  <details class="card">
+    <summary>Signaling log (WebSocket)</summary>
+    <div id="sigLog" class="log"></div>
+  </details>
+
+  <details class="card">
+    <summary>Local SDP</summary>
+    <pre id="sdpLocal">–</pre>
+  </details>
+  <details class="card">
+    <summary>Remote SDP</summary>
+    <pre id="sdpRemote">–</pre>
+  </details>
+
+  <details class="card wide">
+    <summary>Raw getStats() dump</summary>
+    <div class="row"><button id="btnDump">Capture now</button></div>
+    <pre id="rawStats" style="max-height:500px"></pre>
+  </details>
+</main>
+
+<!-- ═════════ SETTINGS DIALOG ═════════ -->
+<dialog id="settings">
+  <div class="dlg">
+    <h2>Settings <button id="btnCloseSettings" title="Close">✕</button></h2>
+    <div class="note" id="mediaInfo" style="margin-bottom:6px">Camera and mic are off.</div>
+    <div class="settings">
+      <div class="subhead">Camera (changing these restarts the camera)</div>
+      <label for="setCam">Camera</label><select id="setCam"><option value="">Default camera</option></select>
+      <label for="setRes">Resolution</label>
+      <select id="setRes">
+        <option value="320x240">320×240 (small)</option>
+        <option value="640x480" selected>640×480 (SD)</option>
+        <option value="1280x720">1280×720 (HD)</option>
+        <option value="1920x1080">1920×1080 (Full HD)</option>
+      </select>
+      <label for="setFps">Frame rate</label>
+      <select id="setFps"><option>10</option><option>15</option><option>24</option><option selected>30</option><option>60</option></select>
+      <label>Flip for others</label>
+      <span>
+        <label><input type="checkbox" id="setFlipH"> left↔right</label>
+        <label><input type="checkbox" id="setFlipV"> upside down</label>
+      </span>
+      <label>Flip for myself</label>
+      <span>
+        <label><input type="checkbox" id="setLocalFlipH"> left↔right</label>
+        <label><input type="checkbox" id="setLocalFlipV"> upside down</label>
+      </span>
+
+      <div class="subhead">Video encoding (applies live, per person you are connected to)</div>
+      <label for="setVBitrate">Max bitrate</label>
+      <select id="setVBitrate">
+        <option value="0">Automatic</option><option value="150">150 kbit/s</option><option value="300">300 kbit/s</option><option value="600">600 kbit/s</option>
+        <option value="1000">1 Mbit/s</option><option value="2500">2.5 Mbit/s</option><option value="5000">5 Mbit/s</option>
+      </select>
+      <label for="setScale">Downscale</label>
+      <select id="setScale"><option value="1">None (send full size)</option><option value="1.5">÷1.5</option><option value="2">÷2</option><option value="4">÷4</option></select>
+      <label for="setDegr">When bandwidth is low</label>
+      <select id="setDegr">
+        <option value="default">Browser decides</option><option value="maintain-framerate">Keep frame rate, lower resolution</option>
+        <option value="maintain-resolution">Keep resolution, lower frame rate</option><option value="balanced">Balanced</option>
+      </select>
+      <label for="setHint">Content type</label>
+      <select id="setHint"><option value="">Auto</option><option value="motion">Motion (camera, video)</option><option value="detail">Detail (slides, text)</option></select>
+      <label for="setVCodec" title="Your preference decides what the OTHER person sends to you">Video codec to receive</label><select id="setVCodec"><option value="auto">Automatic</option></select>
+
+      <div class="subhead">Screen sharing</div>
+      <label for="setSFps">Frame rate</label>
+      <select id="setSFps"><option>5</option><option>10</option><option selected>15</option><option>30</option></select>
+      <label for="setSRes">Resolution</label>
+      <select id="setSRes">
+        <option value="orig">Original (as shared)</option>
+        <option value="1920x1080">Up to 1920×1080</option>
+        <option value="1280x720">Up to 1280×720</option>
+        <option value="854x480">Up to 854×480</option>
+        <option value="640x360">Up to 640×360</option>
+      </select>
+      <label for="setSBitrate">Max bitrate</label>
+      <select id="setSBitrate"><option value="0">Automatic</option><option value="500">500 kbit/s</option><option value="1500">1.5 Mbit/s</option><option value="3000">3 Mbit/s</option><option value="6000">6 Mbit/s</option><option value="10000">10 Mbit/s</option></select>
+      <label>Sound</label><label><input type="checkbox" id="setSAudio"> also share sound (only if your browser offers it)</label>
+      <div class="note" style="grid-column:1/-1">Bigger screens are scaled down (keeping their shape) before they are sent. Applies live while you share.</div>
+
+      <div class="subhead">Microphone</div>
+      <label for="setMic">Microphone</label><select id="setMic"><option value="">Default microphone</option></select>
+      <label>Processing</label>
+      <span>
+        <label><input type="checkbox" id="setAec" checked> echo cancel</label>
+        <label><input type="checkbox" id="setNs" checked> noise reduction</label>
+        <label><input type="checkbox" id="setAgc" checked> auto volume</label>
+      </span>
+      <label for="setABitrate">Audio max bitrate</label>
+      <select id="setABitrate"><option value="0">Automatic</option><option value="16">16 kbit/s</option><option value="32">32 kbit/s</option><option value="64">64 kbit/s</option><option value="128">128 kbit/s</option><option value="256">256 kbit/s</option></select>
+      <label for="setACodec" title="Your preference decides what the OTHER person sends to you">Audio codec to receive</label><select id="setACodec"><option value="auto">Automatic</option></select>
+    </div>
+    <div class="note" style="margin-top:8px">Codec choice is a <b>receive</b> preference: the codec you pick is the one the other person uses when sending to you (they pick theirs for what you send). Changing it triggers a renegotiation. The Details tab shows what is actually in use.</div>
+
+    <div class="settings" style="margin-top:6px">
+      <div class="subhead">Connection (applied when a call is set up)</div>
+    </div>
+    <textarea id="iceCfg" rows="5" spellcheck="false"></textarea>
+    <div class="row" style="margin-top:6px">
+      <label><input type="checkbox" id="relayOnly"> relay only (force TURN)</label>
+      <button id="btnGoogleStun">+ Google STUN</button>
+      <button id="btnReloadCfg">Reload from server</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ═════════ "SEND THIS FILE?" CONFIRMATION ═════════ -->
+<dialog id="sendDlg">
+  <div class="dlg">
+    <h2 id="sendTitle">Send this file?</h2>
+    <div id="sendTo" class="note"></div>
+    <div class="filelist" id="sendList"></div>
+    <div class="note" id="sendWarn"></div>
+    <div class="row" style="justify-content:flex-end;margin-top:10px">
+      <button id="sendCancel">Cancel</button>
+      <button id="sendOk" class="primary">Yes, send</button>
+    </div>
+  </div>
+</dialog>
+
+<!-- ═════════ IMAGE VIEWER ═════════ -->
+<dialog id="imgDlg">
+  <div class="lb">
+    <div class="lbbar">
+      <span class="title" id="lbTitle"></span><span class="count" id="lbCount"></span><span class="sp"></span>
+      <a id="lbDownload" hidden>⬇ Download</a>
+      <a id="lbOpen" target="_blank" rel="noopener noreferrer" hidden>Open original ↗</a>
+      <button id="lbClose" title="Close (Esc)">✕</button>
+    </div>
+    <div class="lbbody" id="lbBody">
+      <button class="lbnav" id="lbPrev" title="Previous image (←)">‹</button>
+      <img id="lbImg" alt="" title="Click to toggle actual size">
+      <button class="lbnav" id="lbNext" title="Next image (→)">›</button>
+    </div>
+  </div>
+</dialog>
+
+<div class="dropzone" id="dropZone" hidden>Drop to send</div>
+<script src="app.js"></script>
+</body>
+</html>
